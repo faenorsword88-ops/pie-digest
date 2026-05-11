@@ -193,7 +193,7 @@ URL: {url}
 </html>"""
 
     # Write the file
-    output_path = os.path.expanduser("~/pie-digest/digest.html")
+    output_path = os.path.expanduser("~/pie-digest/index.html")
     with open(output_path, "w") as f:
         f.write(html)
 
