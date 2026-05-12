@@ -1,12 +1,13 @@
-import sqlite3
 import os
 from datetime import datetime
 from anthropic import Anthropic
 from dotenv import load_dotenv
+from supabase import create_client
 
 load_dotenv()
 
 client = Anthropic()
+supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
 SYSTEM_PROMPT = """You are a briefing writer for a senior credit professional who moved from commercial banking into fintech. He deeply understands credit risk, capital allocation, unit economics, and regulatory pressure. He is building knowledge in payments infrastructure, card network economics, fintech business models, crypto infrastructure, and AI in financial services.
 
@@ -18,43 +19,35 @@ For each article write:
 Write in plain clear english. No hype. No jargon without explanation. Treat him as smart but new to this specific domain."""
 
 def generate_brief():
-    conn = sqlite3.connect("memory.db")
-    c = conn.cursor()
+    response = supabase.table("articles")\
+        .select("title, url, source, summary, score, score_reason, knowledge_gap_flag, gap_area")\
+        .gte("score", 2)\
+        .not_.in_("source", ["Federal Reserve", "CFPB Newsroom"])\
+        .order("score", desc=True)\
+        .execute()
+    articles = response.data
 
-    # Get scored articles - 3s first then 2s
-    c.execute("""
-        SELECT title, url, source, summary, score, score_reason, knowledge_gap_flag, gap_area
-        FROM articles
-        WHERE score >= 2
-        AND source NOT IN ('Federal Reserve', 'CFPB Newsroom')
-        ORDER BY score DESC, fetched_at DESC
-    """)
-    articles = c.fetchall()
-
-    # Get primary source items scored below threshold or any score
-    c.execute("""
-        SELECT title, url, score
-        FROM articles
-        WHERE source IN ('Federal Reserve', 'CFPB Newsroom')
-        ORDER BY score DESC
-    """)
-    primary_items = c.fetchall()
+    primary_response = supabase.table("articles")\
+        .select("title, url, score")\
+        .in_("source", ["Federal Reserve", "CFPB Newsroom"])\
+        .order("score", desc=True)\
+        .execute()
+    primary_items = primary_response.data
 
     print(f"Building digest from {len(articles)} articles...\n")
 
-    # Build the prompt for Claude
     articles_text = ""
-    for i, (title, url, source, summary, score, reason, gap_flag, gap_area) in enumerate(articles, 1):
-        priority = "MUST READ" if score == 3 else "WORTH READING"
-        gap = f"Knowledge gap area: {gap_area}" if gap_flag else ""
+    for i, article in enumerate(articles, 1):
+        priority = "MUST READ" if article["score"] == 3 else "WORTH READING"
+        gap = f"Knowledge gap area: {article['gap_area']}" if article["knowledge_gap_flag"] else ""
         articles_text += f"""
 Article {i} [{priority}]
-Source: {source}
-Title: {title}
-Summary: {summary}
-Scorer note: {reason}
+Source: {article['source']}
+Title: {article['title']}
+Summary: {article['summary']}
+Scorer note: {article['score_reason']}
 {gap}
-URL: {url}
+URL: {article['url']}
 ---"""
 
     response = client.messages.create(
@@ -66,12 +59,10 @@ URL: {url}
 
     briefing_content = response.content[0].text
 
-    # Build HTML
     date_str = datetime.now().strftime("%A, %B %d, %Y")
-    must_reads = [a for a in articles if a[4] == 3]
-    worth_reads = [a for a in articles if a[4] == 2]
+    must_reads = [a for a in articles if a["score"] == 3]
+    worth_reads = [a for a in articles if a["score"] == 2]
 
-    # Primary source notice
     primary_notice = ""
     if primary_items:
         primary_notice = f"""
@@ -80,7 +71,7 @@ URL: {url}
             <details>
                 <summary>Review them</summary>
                 <ul>
-                    {"".join(f'<li><a href="{url}" target="_blank">[{score}] {title}</a></li>' for title, url, score in primary_items)}
+                    {"".join(f'<li><a href="{a["url"]}" target="_blank">[{a["score"]}] {a["title"]}</a></li>' for a in primary_items)}
                 </ul>
             </details>
         </div>"""
@@ -169,15 +160,15 @@ URL: {url}
     <div class="section-header">Must Read — Structural Changes</div>
     {"".join(f'''
     <div class="article must-read">
-        <h2><a href="{a[1]}" target="_blank">{a[0]}</a>{' <span class="gap-flag">🎯 knowledge builder</span>' if a[6] else ''}</h2>
-        <div class="source">{a[2]}</div>
+        <h2><a href="{a['url']}" target="_blank">{a['title']}</a>{' <span class="gap-flag">🎯 knowledge builder</span>' if a['knowledge_gap_flag'] else ''}</h2>
+        <div class="source">{a['source']}</div>
     </div>''' for a in must_reads)}
 
     <div class="section-header">Worth Reading — Useful Context</div>
     {"".join(f'''
     <div class="article worth-read">
-        <h2><a href="{a[1]}" target="_blank">{a[0]}</a>{' <span class="gap-flag">🎯 knowledge builder</span>' if a[6] else ''}</h2>
-        <div class="source">{a[2]}</div>
+        <h2><a href="{a['url']}" target="_blank">{a['title']}</a>{' <span class="gap-flag">🎯 knowledge builder</span>' if a['knowledge_gap_flag'] else ''}</h2>
+        <div class="source">{a['source']}</div>
     </div>''' for a in worth_reads)}
 
     <div style="margin-top: 3rem; font-size: 0.75rem; color: #aaa;">
@@ -192,12 +183,10 @@ URL: {url}
 </body>
 </html>"""
 
-    # Write the file
-    output_path = os.path.expanduser("~/pie-digest/index.html")
+    output_path = "index.html"
     with open(output_path, "w") as f:
         f.write(html)
 
-    conn.close()
     print(f"Digest written to {output_path}")
     print(f"\nSummary: {len(must_reads)} must-read, {len(worth_reads)} worth reading, {len(primary_items)} primary source items")
 
