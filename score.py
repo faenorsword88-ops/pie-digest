@@ -30,8 +30,8 @@ Respond only in JSON, no other text:
 }"""
 
 def score_articles():
-    response = supabase.table("articles").select("id, title, summary, source").filter("score", "is", "null").execute()
-    articles = response.data
+    response = supabase.table("articles").select("id, title, summary, source").execute()
+    articles = [a for a in response.data if a.get("score") is None]
 
     print(f"Scoring {len(articles)} articles...\n")
 
