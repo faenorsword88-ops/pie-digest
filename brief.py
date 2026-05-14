@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from anthropic import Anthropic
 from dotenv import load_dotenv
 from supabase import create_client
@@ -19,9 +19,12 @@ For each article write:
 Write in plain clear english. No hype. No jargon without explanation. Treat him as smart but new to this specific domain."""
 
 def generate_brief():
+    cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+
     response = supabase.table("articles")\
         .select("title, url, source, summary, score, score_reason, knowledge_gap_flag, gap_area")\
         .gte("score", 2)\
+        .gte("fetched_at", cutoff)\
         .not_.in_("source", ["Federal Reserve", "CFPB Newsroom"])\
         .order("score", desc=True)\
         .execute()
@@ -30,6 +33,7 @@ def generate_brief():
     primary_response = supabase.table("articles")\
         .select("title, url, score")\
         .in_("source", ["Federal Reserve", "CFPB Newsroom"])\
+        .gte("fetched_at", cutoff)\
         .order("score", desc=True)\
         .execute()
     primary_items = primary_response.data
